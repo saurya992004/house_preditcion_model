@@ -1,0 +1,76 @@
+
+name: House Rent API CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build Docker image
+        run: docker build -t house-rent-api:ci .
+
+      - name: Start API container
+        run: |
+          docker run -d \
+            --name house-rent-api-ci \
+            -p 8000:8000 \
+            house-rent-api:ci
+
+      - name: Wait for API startup
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent \
+              http://127.0.0.1:8000/ > /dev/null; then
+              echo "API started successfully"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "API failed to start"
+          docker logs house-rent-api-ci || true
+          exit 1
+
+      - name: Test features endpoint
+        run: |
+          curl --fail --silent \
+            http://127.0.0.1:8000/features \
+            --output features.json
+
+          python -c "import json; d=json.load(open('features.json')); assert isinstance(d.get('required_features'), list) and d['required_features']; print('Features endpoint passed')"
+
+      - name: Test prediction input validation
+        shell: bash
+        run: |
+          status=$(curl --silent \
+            --output predict.json \
+            --write-out "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            http://127.0.0.1:8000/predict)
+
+          cat predict.json
+          test "$status" = "422"
+
+          echo "Prediction endpoint validation passed"
+
+      - name: Show logs and clean up
+        if: always()
+        run: |
+          docker logs house-rent-api-ci || true
+          docker rm -f house-rent-api-ci || true
